@@ -12,24 +12,65 @@ patients = pd.read_csv(PROJECT_ROOT / 'data' / 'raw' / 'patients.csv',
                            'FIPS': 'string'
                        })
 
+# duplicate_patient = patients.iloc[[0]].copy()
+
+# duplicate_patient["CITY"] = "Different City"
+
+# patients = pd.concat(
+#     [patients, duplicate_patient],
+#     ignore_index=True
+# )
+
 # Create a copy of the DataFrame to work with
 patients_clean = patients.copy()
 
+# Validate if there are any du
+def validate_no_duplicate_rows(df, severity):
+    duplicate_count = df.duplicated().sum()
+    if duplicate_count == 0:
+        status = "PASS"
+    else:
+        status = "FAIL"
+
+    return {"check": "No duplicate rows", 
+            "status": status,
+            "severity": severity,
+            "count": duplicate_count}
+
+print(validate_no_duplicate_rows(patients_clean, 'WARNING'))
+
+rows_before = patients_clean.shape[0]
+print(f"Input: {rows_before} rows")
+
+def remove_duplicates(df):
+    duplicate_rows = df[df.duplicated()]
+    if not duplicate_rows.empty:
+        print(f"\nExact duplicate rows found: {len(duplicate_rows)}")
+        df = df.drop_duplicates()
+    return df
+
+patients_clean = remove_duplicates(patients_clean)
+
+rows_after = patients_clean.shape[0]
+print(f"Output: {rows_after} rows")
+
+validate_no_duplicate_rows(patients_clean, 'CRITICAL')
+
 # Print the DataFrame, its data types, dimensions, and column titles
 # print(patients.dtypes)
-print(f"Rows: {patients.shape[0]:,} \nColumns: {patients.shape[1]:,}")
+print(f"Rows: {patients_clean.shape[0]:,} \nColumns: {patients_clean.shape[1]:,}")
 
 # Check for duplicate rows in the DataFrame
-print(f"\nDuplicate rows: {patients.duplicated().sum()}")
+print(f"\nDuplicate rows: {patients_clean.duplicated().sum()}")
 
 # Check for duplicate values in the 'Id' column
-print(f"Duplicate patient IDs: {patients['Id'].duplicated().sum()}")
+print(f"Duplicate patient IDs: {patients_clean['Id'].duplicated().sum()}")
 
 # Check for missing values in the 'Id' column
-print(f"Missing patient IDs: {patients['Id'].isna().sum()}")
+print(f"Missing patient IDs: {patients_clean['Id'].isna().sum()}")
 
 # Get the number of missing values in each column
-missing_values = patients.isna().sum()
+missing_values = patients_clean.isna().sum()
 print("\nMissing values:")
 print(missing_values[missing_values > 0])
 
@@ -78,10 +119,10 @@ def validate_patient_data(df):
     results.append(validate_unique_id(df, 'Id', 'CRITICAL'))
     results.append(validate_not_null(df, 'Id', 'CRITICAL'))
     results.append(validate_no_value(df, 'ZIP', '00000', 'WARNING'))
-
+    results.append(validate_no_duplicate_rows(df, 'CRITICAL'))
     return results 
 
-validation_results = validate_patient_data(patients)
+validation_results = validate_patient_data(patients_clean)
 
 for result in validation_results:
     print(result)
@@ -104,12 +145,13 @@ else:
     invalid_zip_count = (patients_clean['ZIP'] == "00000").sum()
     print(f"\nInvalid ZIP placeholders before cleaning: {invalid_zip_count}")
 
-    # Replace "00000" with NaN in the 'ZIP' column
+    # Replace "00000" with a missing value in the 'ZIP' column
     patients_clean['ZIP'] = patients_clean['ZIP'].replace("00000", pd.NA)
     remaining_invalid_zips = (patients_clean['ZIP'] == "00000").sum()
     missing_zip_after = patients_clean['ZIP'].isna().sum()
     print(f"Invalid ZIP placeholders after cleaning: {remaining_invalid_zips}")
     print(f"Missing ZIP values after cleaning: {missing_zip_after}")
+
 
     # Check for rows where 'FIPS' is missing but 'ZIP' is present
     fips_without_missing_zip = patients_clean[
