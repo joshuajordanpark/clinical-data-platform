@@ -12,15 +12,6 @@ patients = pd.read_csv(PROJECT_ROOT / 'data' / 'raw' / 'patients.csv',
                            'FIPS': 'string'
                        })
 
-# duplicate_patient = patients.iloc[[0]].copy()
-
-# duplicate_patient["CITY"] = "Different City"
-
-# patients = pd.concat(
-#     [patients, duplicate_patient],
-#     ignore_index=True
-# )
-
 # Create a copy of the DataFrame to work with
 patients_clean = patients.copy()
 
@@ -37,8 +28,6 @@ def validate_no_duplicate_rows(df, severity):
             "severity": severity,
             "count": duplicate_count}
 
-print(validate_no_duplicate_rows(patients_clean, 'WARNING'))
-
 rows_before = patients_clean.shape[0]
 print(f"Input: {rows_before} rows")
 
@@ -53,8 +42,6 @@ patients_clean = remove_duplicates(patients_clean)
 
 rows_after = patients_clean.shape[0]
 print(f"Output: {rows_after} rows")
-
-validate_no_duplicate_rows(patients_clean, 'CRITICAL')
 
 # Print the DataFrame, its data types, dimensions, and column titles
 # print(patients.dtypes)
@@ -122,6 +109,63 @@ def validate_patient_data(df):
     results.append(validate_no_duplicate_rows(df, 'CRITICAL'))
     return results 
 
+def validate_date_parse(column, parse_failure_count, severity):
+    if parse_failure_count == 0:
+        status = "PASS"
+    else:
+        status = "FAIL"
+    return {"check": f"{column} parse",
+            "status": status,
+            "severity": severity,
+            "count": parse_failure_count}   
+
+def validate_date_order(df, earlier_column, later_column, severity):
+    wrong_orders = df[
+        df[later_column].notna()
+        & (
+            df[later_column] < df[earlier_column]
+        )
+    ]
+    if len(wrong_orders) == 0:
+        status = "PASS"
+    else:
+        status = "FAIL"
+
+    return {
+        "check": f"{later_column} after {earlier_column}",
+        "status": status,
+        "severity": severity,
+        "count": len(wrong_orders) 
+    }
+
+def validate_not_future(df, column, severity):
+    today = pd.Timestamp.today().normalize()
+    
+    future_dates = df[
+        df[column] > today
+    ]
+
+    if len(future_dates) == 0:
+        status = "PASS"
+    else:
+        status = "FAIL"
+
+    return {
+        "check": f"{column} not future",
+        "status": status,
+        "severity": severity,
+        "count": len(future_dates)
+    }
+
+def validate_transformed_patient_data(df):
+    results = []
+
+    results.append(validate_date_parse('BIRTHDATE',birthdate_parse_failures,'CRITICAL'))
+    results.append(validate_date_parse('DEATHDATE',deathdate_parse_failures,'CRITICAL'))
+    results.append(validate_date_order(patients_clean, 'BIRTHDATE', 'DEATHDATE', 'CRITICAL'))
+    results.append(validate_not_future(patients_clean,'BIRTHDATE', 'CRITICAL'))
+    return results 
+
 validation_results = validate_patient_data(patients_clean)
 
 for result in validation_results:
@@ -172,10 +216,65 @@ else:
             f"FIPS/ZIP relationship: FAIL - "
             f"{len(fips_without_missing_zip)} rows")
 
-    # Save the cleaned DataFrame to a new CSV file
-    patients_clean.to_csv(output_path, index=False)
+    birthdate_missing_before = patients_clean['BIRTHDATE'].isna().sum()
 
-    print(f"\nPipeline completed successfully.")
-    print(f"Output written to: {output_path}")
+    # Convert BIRTHDATE column to datetime format
+    patients_clean['BIRTHDATE'] = pd.to_datetime(
+        patients_clean['BIRTHDATE'],
+        format='%Y-%m-%d',
+        errors='coerce'
+    )
 
+    birthdate_missing_after = patients_clean['BIRTHDATE'].isna().sum()
 
+    birthdate_parse_failures = (
+        birthdate_missing_after - birthdate_missing_before
+    ) 
+
+    deathdate_missing_before = patients_clean['DEATHDATE'].isna().sum()
+
+    # Convert DEATHDATE column to datetime format
+    patients_clean['DEATHDATE'] = pd.to_datetime(
+        patients_clean['DEATHDATE'],
+        format='%Y-%m-%d',
+        errors='coerce'
+    )
+
+    deathdate_missing_after = patients_clean['DEATHDATE'].isna().sum()
+
+    deathdate_parse_failures = (
+        deathdate_missing_after - deathdate_missing_before
+    )
+
+    death_before_birth = patients_clean[
+        patients_clean['DEATHDATE'].notna()
+        & (
+            patients_clean['DEATHDATE'] < patients_clean['BIRTHDATE']
+        )
+    ]
+
+    transformed_validation_results = validate_transformed_patient_data(patients_clean)
+
+    for result in transformed_validation_results:
+        print(result)
+
+    print(f"BIRTHDATE dtype: {patients_clean['BIRTHDATE'].dtype}")
+    print(f"DEATHDATE dtype: {patients_clean['DEATHDATE'].dtype}")
+
+    post_critical_failures = []
+
+    for result in transformed_validation_results:
+        if result['status'] == 'FAIL' and result['severity'] == 'CRITICAL':
+            post_critical_failures.append(result)
+
+    if post_critical_failures:
+        print("\nPIPELINE FAILED\nCritical validation failures:")
+        for failure in post_critical_failures:
+            print(f"- {failure['check']}: {failure['count']} failure(s)")
+    else:
+
+        # Save the cleaned DataFrame to a new CSV file
+        patients_clean.to_csv(output_path, index=False)
+
+        print(f"\nPipeline completed successfully.")
+        print(f"Output written to: {output_path}")
