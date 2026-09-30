@@ -6,16 +6,39 @@ PROJECT_ROOT = Path(__file__).parent.parent
 output_path = PROJECT_ROOT / 'data' / 'processed' / 'patients_clean.csv'
 
 # Read the patients.csv file into a DataFrame
-patients = pd.read_csv(PROJECT_ROOT / 'data' / 'raw' / 'patients.csv',
-                       dtype={
-                           'ZIP': 'string',
-                           'FIPS': 'string'
-                       })
+# patients = pd.read_csv(PROJECT_ROOT / 'data' / 'raw' / 'patients.csv',
+#                        dtype={
+#                            'ZIP': 'string',
+#                            'FIPS': 'string'
+#                        })
+
+def load_csv(filename, dtype=None):
+    return pd.read_csv(PROJECT_ROOT / 'data' / 'raw' / filename,
+                dtype=dtype)
+
+patients = load_csv(
+    "patients.csv",
+    dtype={
+        "ZIP": "string",
+        "FIPS": "string"
+    }
+)
+
+encounters = load_csv(
+    "encounters.csv"
+)
+
+print(encounters.shape)
+print(encounters.columns.tolist())
+print(encounters.dtypes)
+print(encounters.head())
 
 # Create a copy of the DataFrame to work with
 patients_clean = patients.copy()
 
-# Validate if there are any du
+encounters_clean = encounters.copy()
+
+# Validate if there are any duplicates
 def validate_no_duplicate_rows(df, severity):
     duplicate_count = df.duplicated().sum()
     if duplicate_count == 0:
@@ -162,11 +185,98 @@ def validate_transformed_patient_data(df):
 
     results.append(validate_date_parse('BIRTHDATE',birthdate_parse_failures,'CRITICAL'))
     results.append(validate_date_parse('DEATHDATE',deathdate_parse_failures,'CRITICAL'))
-    results.append(validate_date_order(patients_clean, 'BIRTHDATE', 'DEATHDATE', 'CRITICAL'))
-    results.append(validate_not_future(patients_clean,'BIRTHDATE', 'CRITICAL'))
+    results.append(validate_date_order(df, 'BIRTHDATE', 'DEATHDATE', 'CRITICAL'))
+    results.append(validate_not_future(df,'BIRTHDATE', 'CRITICAL'))
     return results 
 
-validation_results = validate_patient_data(patients_clean)
+def validate_foreign_key(child_df, child_column, parent_df, parent_column, severity):
+    orphan_child_rows = child_df[
+        child_df[child_column].notna()
+        & ~child_df[child_column].isin(parent_df[parent_column])
+    ]
+
+    if len(orphan_child_rows) == 0:
+        status = 'PASS'
+    else:
+        status = 'FAIL'
+    return {
+        "check": f"Orphan {child_column} values in {parent_column}",
+        "status": status,
+        "severity": severity,
+        "count": len(orphan_child_rows)
+    }
+
+def validate_encounter_data(encounters_df, patients_df):
+    results = []
+
+    results.append(validate_unique_id(
+        encounters_df,
+        "Id",
+        'CRITICAL'
+    ))
+
+    results.append(validate_not_null(
+        encounters_df,
+        'PATIENT',
+        'CRITICAL'
+    ))
+
+    results.append(validate_no_duplicate_rows(
+        encounters_df,
+        'CRITICAL'
+    ))
+
+    results.append(validate_foreign_key(
+        encounters_df, 
+        'PATIENT', 
+        patients_df, 
+        'Id', 
+        'CRITICAL'
+    ))
+
+    return results
+
+
+print(f"Patient rows: {patients_clean.shape[0]}")
+print(f"Encounter rows: {encounters_clean.shape[0]}")
+
+# print(f"Orphan encounters: {len(orphan_encounters)}")
+
+validation_results = (
+    validate_patient_data(patients_clean)
+    + validate_encounter_data(encounters_clean, patients_clean)
+)
+
+def validate_join_row_count(df_before, df_after, severity):
+    rows_before = len(df_before)
+    rows_after = len(df_after)
+
+    if rows_before == rows_after:
+        status = "PASS"
+    else:
+        status = "FAIL"
+    
+    return {
+        "check": "Join preserved encounter row count",
+        "status": status,
+        "severity": severity,
+        "count": abs(rows_before - rows_after)
+    }
+
+
+def validate_no_unmatched_rows(df, severity):
+    unmatched_rows = (df['_merge'] == 'left_only').sum()
+    if unmatched_rows == 0:
+        status = 'PASS'
+    else: 
+        status = 'FAIL'
+
+    return {
+        "check": "No unmatched encounter rows",
+        "status": status,
+        "severity": severity,
+        "count": unmatched_rows
+    }
 
 for result in validation_results:
     print(result)
@@ -261,9 +371,47 @@ else:
     print(f"BIRTHDATE dtype: {patients_clean['BIRTHDATE'].dtype}")
     print(f"DEATHDATE dtype: {patients_clean['DEATHDATE'].dtype}")
 
+    patients_columns = patients_clean[
+        ['Id', 'BIRTHDATE', 'GENDER', 'RACE', 'ETHNICITY']
+    ].rename(columns={'Id': 'PATIENT_ID'})
+
+    # merging encounters LEFT JOIN patients on encounters.patient = patient.Id
+    encounters_with_patients = encounters_clean.merge(
+        patients_columns,
+        how='left',
+        left_on="PATIENT",
+        right_on="PATIENT_ID",
+        validate="many_to_one",
+        indicator=True
+    )
+
+    matched_count = (encounters_with_patients['_merge'] == 'both').sum()
+
+    print(f"Matched encounters (_merge == 'both'): {matched_count}")
+
+    join_validation = validate_join_row_count(
+        encounters_clean,
+        encounters_with_patients,
+        'CRITICAL'
+    )
+
+    unmatched_row_validation = validate_no_unmatched_rows(
+        encounters_with_patients, 
+        'CRITICAL'
+    )
+
+    # post validation results
+    post_validation_results = (
+        transformed_validation_results
+        + [
+            join_validation,
+            unmatched_row_validation
+        ]
+    )
+
     post_critical_failures = []
 
-    for result in transformed_validation_results:
+    for result in post_validation_results:
         if result['status'] == 'FAIL' and result['severity'] == 'CRITICAL':
             post_critical_failures.append(result)
 
@@ -276,5 +424,19 @@ else:
         # Save the cleaned DataFrame to a new CSV file
         patients_clean.to_csv(output_path, index=False)
 
+        encounters_with_patients = encounters_with_patients.drop(
+            columns=["_merge"]
+        )
+
+        encounters_output_path = (
+            PROJECT_ROOT
+            / 'data'
+            / 'processed'
+            / 'encounters_enriched.csv'
+        )
+
+        encounters_with_patients.to_csv(encounters_output_path, index=False)
+
         print(f"\nPipeline completed successfully.")
-        print(f"Output written to: {output_path}")
+        print(f"Patient output written to: {output_path}")
+        print(f"Encounter output written to: {encounters_output_path}")
