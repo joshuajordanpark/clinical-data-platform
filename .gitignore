@@ -1,3 +1,4 @@
+data/warehouse/
 data/processed/
 .venv/
 __pycache__/
