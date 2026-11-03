@@ -125,6 +125,7 @@ def main():
             print("\nPIPELINE FAILED\nCritical validation failures:")
             for failure in post_critical_failures:
                 print(f"-{failure['check']}: {failure['count']} failure(s)")
+            raise RuntimeError("Critical data validation failed")
         else:
 
             cursor = connection.cursor()
