@@ -2,14 +2,17 @@ import sqlite3
 import pandas as pd
 import pytest
 import src.load_to_sqlite as pipeline
+from sqlalchemy import create_engine, text
 
 from src.load_to_sqlite import load_tables, validate_encounter_patient_references
 
 @pytest.fixture
 def db_connection():
-    conn = sqlite3.connect(':memory:')
-    yield conn
-    conn.close()
+    engine = create_engine("sqlite:///:memory:")
+
+    with engine.begin() as connection:
+        yield connection
+    engine.dispose()
 
 def test_load_tables(db_connection):
 
@@ -28,23 +31,22 @@ def test_load_tables(db_connection):
     load_tables(db_connection, patients, encounters)
 
     # Verify the tables were loaded correctly
-    cursor = db_connection.cursor()
 
-    cursor.execute("SELECT COUNT(*) FROM patients")
-    patients_count = cursor.fetchone()[0]
+    patients_count = db_connection.execute(
+        text("SELECT COUNT(*) FROM patients")
+    ).scalar_one()
 
-    cursor.execute("SELECT COUNT(*) FROM encounters")
-    encounters_count = cursor.fetchone()[0]
-
+    encounters_count = db_connection.execute(
+        text("SELECT COUNT(*) FROM encounters")
+    ).scalar_one()
+    
     assert patients_count == len(patients)
     assert encounters_count == len(encounters)
 
-    cursor.execute("SELECT Id, FIRST FROM patients ORDER BY Id")
-    patients_data = cursor.fetchall()
+    patients_data = db_connection.execute(text("SELECT Id, FIRST FROM patients ORDER BY Id")).fetchall()
     assert patients_data == [('P001', 'Alice'), ('P002', 'Bob')]
 
-    cursor.execute("SELECT Id, PATIENT FROM encounters ORDER BY Id")
-    encounters_data = cursor.fetchall()
+    encounters_data = db_connection.execute(text("SELECT Id, PATIENT FROM encounters ORDER BY Id")).fetchall()
     assert encounters_data == [('E001', 'P001'), ('E002', 'P001'), ('E003', 'P002')]
 
 def test_invalid_encounter_patient_reference(db_connection):
